@@ -708,18 +708,26 @@ export default function DashboardPage() {
 	}, []);
 
 	return (
-		<div id="dashboard-root" className="no-padding-parent no-border-parent bg-background flex h-[calc(100vh_-_16px)] w-full gap-3">
-			{/* Sidebar Filters */}
-			<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+		<div
+			id="dashboard-root"
+			className="no-padding-parent no-border-parent bg-background flex h-full min-h-[calc(100dvh_-_5rem)] w-full gap-3 md:h-[calc(100vh_-_16px)] md:min-h-0"
+		>
+			{/* Sidebar Filters — hidden on mobile, use date picker + tab-level filters for filtering */}
+			<div className="hidden md:block">
+				<LogsFilterSidebar filters={filters} onFiltersChange={setFilters} />
+			</div>
 
 			{/* Main Content */}
-			<ScrollArea className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-l-md">
+			<ScrollArea
+				className="bg-card flex min-w-0 flex-1 flex-col gap-4 rounded-md md:rounded-l-md md:rounded-r-none"
+				viewportClassName="[&>div]:[display:block!important]"
+			>
 				{/* Header */}
-				<div className="flex items-center justify-between p-4">
+				<div className="flex flex-col gap-3 p-3 md:flex-row md:items-center md:justify-between md:p-4">
 					<div className="flex items-center gap-2">
 						<h1 className="text-lg font-semibold">Dashboard</h1>
 					</div>
-					<div className="flex items-center gap-2">
+					<div className="flex flex-wrap items-center gap-2">
 						<ExportPopover
 							getData={getDashboardData}
 							onPreloadData={handlePreloadData}
@@ -727,7 +735,7 @@ export default function DashboardPage() {
 							onPdfExportDone={handlePdfExportDone}
 						/>
 						{urlState.tab === "mcp" && mcpFilterData && (
-							<div className="flex items-center gap-1">
+							<div className="flex flex-wrap items-center gap-1">
 								{mcpFilterData.tool_names?.length > 0 && (
 									<ModelFilterSelect
 										models={mcpFilterData.tool_names}
@@ -772,26 +780,28 @@ export default function DashboardPage() {
 					</div>
 				</div>
 
-				<div className="p-4">
+				<div className="p-3 md:p-4">
 					{/* Tabs */}
 					<Tabs value={urlState.tab} onValueChange={handleTabChange}>
-						<TabsList className="mb-2">
-							<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
-								Overview
-							</TabsTrigger>
-							<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
-								Provider Usage
-							</TabsTrigger>
-							<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
-								Model Rankings
-							</TabsTrigger>
-							<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
-								MCP usage
-							</TabsTrigger>
-							<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
-								User Rankings
-							</TabsTrigger>
-						</TabsList>
+						<div className="-mx-3 mb-2 overflow-x-auto px-3 md:-mx-4 md:px-4 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
+							<TabsList>
+								<TabsTrigger value="overview" data-testid="dashboard-tab-overview">
+									Overview
+								</TabsTrigger>
+								<TabsTrigger value="provider-usage" data-testid="dashboard-tab-provider-usage">
+									Provider Usage
+								</TabsTrigger>
+								<TabsTrigger value="rankings" data-testid="dashboard-tab-rankings">
+									Model Rankings
+								</TabsTrigger>
+								<TabsTrigger value="mcp" data-testid="dashboard-tab-mcp">
+									MCP usage
+								</TabsTrigger>
+								<TabsTrigger value="user-rankings" data-testid="dashboard-tab-user-rankings">
+									User Rankings
+								</TabsTrigger>
+							</TabsList>
+						</div>
 
 						{/* Overview Tab */}
 						<TabsContent value="overview" {...(pdfMode && { forceMount: true })}>
