@@ -87,7 +87,17 @@ export function LogsDataTable({
 	const lastLeftPinId = columnPinning.left?.at(-1);
 	const firstRightPinId = columnPinning.right?.at(0);
 
-	const columnLabels = useMemo(() => ({ ...COLUMN_LABELS }), []);
+	// Build labels, picking up dynamic metadata columns from the columns array
+	const columnLabels = useMemo(() => {
+		const labels: Record<string, string> = { ...COLUMN_LABELS };
+		for (const col of columns) {
+			const id = "id" in col && col.id ? col.id : undefined;
+			if (id?.startsWith("metadata_") && typeof col.header === "string") {
+				labels[id] = col.header;
+			}
+		}
+		return labels;
+	}, [columns]);
 
 	// Handle native drag-and-drop reorder
 	const handleColumnDrop = useCallback(
