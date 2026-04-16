@@ -744,16 +744,30 @@ func (s *RDBLogStore) GetStats(ctx context.Context, filters SearchFilters) (*Sea
 			// Scope to root rows only so denominator and numerator are drawn from the same population.
 			// A chain is successful if the root itself succeeded or any of its fallbacks succeeded.
 			userFacingQuery = userFacingQuery.Where("fallback_index = ?", 0).Where("status IN ?", []string{"success", "error"})
+			// Use a LEFT JOIN instead of a correlated EXISTS subquery: the inner set is computed
+			// once and hash-joined, reducing complexity from O(N×M) to O(N+M).
+			// The inner subquery is bounded by the same time window as the outer query:
+			// fallbacks always complete within milliseconds of their root request, so they
+			// always share the same time window, and this prevents a full historical table scan.
+			innerJoin := `LEFT JOIN (
+				SELECT DISTINCT parent_request_id
+				FROM logs
+				WHERE status = 'success' AND parent_request_id IS NOT NULL`
+			var innerArgs []interface{}
+			if filters.StartTime != nil {
+				innerJoin += " AND timestamp >= ?"
+				innerArgs = append(innerArgs, *filters.StartTime)
+			}
+			if filters.EndTime != nil {
+				innerJoin += " AND timestamp <= ?"
+				innerArgs = append(innerArgs, *filters.EndTime)
+			}
+			innerJoin += `) fallback_success ON fallback_success.parent_request_id = logs.id`
+			userFacingQuery = userFacingQuery.Joins(innerJoin, innerArgs...)
 			if err := userFacingQuery.Select(`
-				COUNT(DISTINCT id) as total_user_requests,
+				COUNT(DISTINCT logs.id) as total_user_requests,
 				COUNT(DISTINCT CASE
-					WHEN status = 'success' THEN id
-					WHEN EXISTS (
-						SELECT 1
-						FROM logs fallback
-						WHERE fallback.parent_request_id = logs.id
-							AND fallback.status = 'success'
-					) THEN id
+					WHEN logs.status = 'success' OR fallback_success.parent_request_id IS NOT NULL THEN logs.id
 					ELSE NULL
 				END) as successful_user_requests
 			`).Scan(&userFacingResult).Error; err != nil {

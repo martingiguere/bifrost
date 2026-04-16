@@ -229,12 +229,12 @@ export default function LogsPage() {
 			missing_cost_only: urlState.missing_cost_only,
 			metadata_filters: urlState.metadata_filters
 				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
+					try {
+						return JSON.parse(urlState.metadata_filters);
+					} catch {
+						return undefined;
+					}
+				})()
 				: undefined,
 		}),
 		// Only re-derive filters when filter-related URL params change (not pagination)
@@ -758,7 +758,7 @@ export default function LogsPage() {
 		if (filters.objects?.length && !filters.objects.includes(log.object)) {
 			return false;
 		}
-		if (filters.selected_key_ids?.length && log.selected_key_id && !filters.selected_key_ids.includes(log.selected_key_id)) {
+		if (filters.selected_key_ids?.length && log.selected_key_id && !filters.selected_key_ids.includes(log.selected_key_id ?? "")) {
 			return false;
 		}
 		if (filters.virtual_key_ids?.length) {
