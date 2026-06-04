@@ -9,6 +9,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
 )
 
 // deepCopyResponsesStreamResponse creates a deep copy of BifrostResponsesStreamResponse
@@ -50,6 +51,11 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copy.OutputIndex = &copyOutputIndex
 	}
 
+	if original.SummaryIndex != nil {
+		copySummaryIndex := *original.SummaryIndex
+		copy.SummaryIndex = &copySummaryIndex
+	}
+
 	if original.Item != nil {
 		copyItem := deepCopyResponsesMessage(*original.Item)
 		copy.Item = &copyItem
@@ -73,6 +79,16 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 	if original.Delta != nil {
 		copyDelta := *original.Delta
 		copy.Delta = &copyDelta
+	}
+
+	if original.Signature != nil {
+		copySignature := *original.Signature
+		copy.Signature = &copySignature
+	}
+
+	if original.Obfuscation != nil {
+		copyObfuscation := *original.Obfuscation
+		copy.Obfuscation = &copyObfuscation
 	}
 
 	// Deep copy LogProbs slice if present
@@ -170,6 +186,16 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 	if original.Type != nil {
 		copyType := *original.Type
 		copy.Type = &copyType
+	}
+
+	if original.Status != nil {
+		copyStatus := *original.Status
+		copy.Status = &copyStatus
+	}
+
+	if original.Phase != nil {
+		copyPhase := *original.Phase
+		copy.Phase = &copyPhase
 	}
 
 	if original.Role != nil {
@@ -890,7 +916,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		return nil, fmt.Errorf("accumulator-id not found in context or is empty")
 	}
 
-	_, provider, model := bifrost.GetResponseFields(result, bifrostErr)
+	_, provider, requestedModel, resolvedModel := bifrost.GetResponseFields(result, bifrostErr)
 
 	isFinalChunk := bifrost.IsFinalChunk(ctx)
 	chunk := a.getResponsesStreamChunk()
@@ -929,7 +955,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		chunk.ChunkIndex = result.ResponsesStreamResponse.ExtraFields.ChunkIndex
 		if isFinalChunk {
 			if a.pricingManager != nil {
-				cost := a.pricingManager.CalculateCost(result)
+				cost := a.pricingManager.CalculateCost(result, modelcatalog.PricingLookupScopesFromContext(ctx, string(result.GetExtraFields().Provider)))
 				chunk.Cost = bifrost.Ptr(cost)
 			}
 			chunk.SemanticCacheDebug = result.GetExtraFields().CacheDebug
@@ -965,20 +991,22 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		}
 
 		return &ProcessedStreamResponse{
-			RequestID:  requestID,
-			StreamType: StreamTypeResponses,
-			Provider:   provider,
-			Model:      model,
-			Data:       data,
-			RawRequest: &rawRequest,
+			RequestID:      requestID,
+			StreamType:     StreamTypeResponses,
+			Provider:       provider,
+			RequestedModel: requestedModel,
+			ResolvedModel:  resolvedModel,
+			Data:           data,
+			RawRequest:     &rawRequest,
 		}, nil
 	}
 
 	return &ProcessedStreamResponse{
-		RequestID:  requestID,
-		StreamType: StreamTypeResponses,
-		Provider:   provider,
-		Model:      model,
-		Data:       nil,
+		RequestID:      requestID,
+		StreamType:     StreamTypeResponses,
+		Provider:       provider,
+		RequestedModel: requestedModel,
+		ResolvedModel:  resolvedModel,
+		Data:           nil,
 	}, nil
 }

@@ -2,11 +2,13 @@ package openai
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 )
 
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
@@ -75,6 +77,221 @@ func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Verify the Function pointer is a different object (deep copy)
 	if result.ChatParameters.Tools[0].Function == bifrostReq.Params.Tools[0].Function {
 		t.Error("expected Function pointer to be a copy, not the original")
+	}
+}
+
+func TestToOpenAIChatRequest_PreservesN(t *testing.T) {
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4.1",
+		Input: []schemas.ChatMessage{
+			{
+				Role: schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: schemas.Ptr("hello"),
+				},
+			},
+		},
+		Params: &schemas.ChatParameters{
+			N: schemas.Ptr(2),
+		},
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+	if out == nil {
+		t.Fatal("expected request")
+	}
+	if out.N == nil || *out.N != 2 {
+		t.Fatalf("expected n=2, got %#v", out.N)
+	}
+}
+
+func TestToOpenAIChatRequest_NormalizesReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{
+			name:     "preserves xhigh for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2",
+			model:    "gpt-5.2",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.3 codex",
+			model:    "gpt-5.3-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.5",
+			model:    "gpt-5.5",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps minimal to low",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps max to xhigh for xhigh-capable model",
+			model:    "gpt-5.4",
+			effort:   "max",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps max to high for model without xhigh",
+			model:    "gpt-5.1",
+			effort:   "max",
+			expected: "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    tt.model,
+				Input: []schemas.ChatMessage{{
+					Role: schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: schemas.Ptr("hello"),
+					},
+				}},
+				Params: &schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort:    schemas.Ptr(tt.effort),
+						MaxTokens: schemas.Ptr(1024),
+					},
+				},
+			}
+
+			out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+			if out == nil {
+				t.Fatal("expected OpenAI chat request")
+			}
+			if out.Reasoning == nil || out.Reasoning.Effort == nil {
+				t.Fatal("expected reasoning effort to be set")
+			}
+			if got := *out.Reasoning.Effort; got != tt.expected {
+				t.Fatalf("expected reasoning effort %q, got %q", tt.expected, got)
+			}
+			if out.Reasoning.MaxTokens != nil {
+				t.Fatalf("expected reasoning max_tokens to be cleared, got %d", *out.Reasoning.MaxTokens)
+			}
+		})
+	}
+}
+
+func TestOpenAIChatRequest_FilterOpenAISpecificParameters_NormalizesReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		model    string
+		effort   string
+		expected string
+	}{
+		{
+			name:     "preserves xhigh for gpt-5.4",
+			model:    "gpt-5.4",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 pro",
+			model:    "gpt-5.2-pro",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.2 codex",
+			model:    "gpt-5.2-codex",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "preserves xhigh for gpt-5.5",
+			model:    "gpt-5.5",
+			effort:   "xhigh",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5.1",
+			model:    "gpt-5.1",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps xhigh to high for gpt-5-pro",
+			model:    "gpt-5-pro",
+			effort:   "xhigh",
+			expected: "high",
+		},
+		{
+			name:     "maps minimal to low",
+			model:    "gpt-5.4",
+			effort:   "minimal",
+			expected: "low",
+		},
+		{
+			name:     "maps max to xhigh for xhigh-capable model",
+			model:    "gpt-5.4",
+			effort:   "max",
+			expected: "xhigh",
+		},
+		{
+			name:     "maps max to high for model without xhigh",
+			model:    "gpt-5.1",
+			effort:   "max",
+			expected: "high",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &OpenAIChatRequest{
+				Model: tt.model,
+				ChatParameters: schemas.ChatParameters{
+					Reasoning: &schemas.ChatReasoning{
+						Effort:    schemas.Ptr(tt.effort),
+						MaxTokens: schemas.Ptr(1024),
+					},
+				},
+			}
+
+			req.filterOpenAISpecificParameters()
+
+			if req.Reasoning == nil || req.Reasoning.Effort == nil {
+				t.Fatal("expected reasoning effort to be set")
+			}
+			if got := *req.Reasoning.Effort; got != tt.expected {
+				t.Fatalf("expected reasoning effort %q, got %q", tt.expected, got)
+			}
+			if req.Reasoning.MaxTokens != nil {
+				t.Fatalf("expected reasoning max_tokens to be cleared, got %d", *req.Reasoning.MaxTokens)
+			}
+		})
 	}
 }
 
@@ -277,7 +494,6 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToOpenAIChatRequest(ctx, bifrostReq), nil
 		},
-		schemas.Fireworks,
 	)
 	if bifrostErr != nil {
 		t.Fatalf("failed to build request body: %v", bifrostErr.Error.Message)
@@ -304,6 +520,68 @@ func TestToOpenAIChatRequest_FireworksPreservesReasoningAndCacheIsolation(t *tes
 	}
 	if got, ok := assistantMessage["reasoning_content"].(string); !ok || got != reasoning {
 		t.Fatalf("expected reasoning_content %q in assistant payload, got %#v", reasoning, assistantMessage["reasoning_content"])
+	}
+}
+
+// TestToOpenAIChatRequest_AnnotationsNotInWirePayload verifies that MCPToolAnnotations
+// (stored on ChatTool with json:"-") are never included in the JSON body sent to OpenAI.
+func TestToOpenAIChatRequest_AnnotationsNotInWirePayload(t *testing.T) {
+	readOnly := true
+
+	bifrostReq := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{
+				{
+					Type: schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{
+						Name:        "read_file",
+						Description: schemas.Ptr("Read a file"),
+						Parameters: &schemas.ToolFunctionParameters{
+							Type: "object",
+							Properties: schemas.NewOrderedMapFromPairs(
+								schemas.KV("path", map[string]interface{}{"type": "string"}),
+							),
+							Required: []string{"path"},
+						},
+					},
+					Annotations: &schemas.MCPToolAnnotations{
+						Title:        "File Reader",
+						ReadOnlyHint: &readOnly,
+					},
+				},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+
+	result := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, result)
+
+	wireBody, err := json.Marshal(result)
+	require.NoError(t, err)
+	s := string(wireBody)
+
+	// Annotations must be absent from the wire payload
+	if strings.Contains(s, "annotations") {
+		t.Errorf("annotations field leaked into OpenAI wire payload: %s", s)
+	}
+	if strings.Contains(s, "readOnlyHint") {
+		t.Errorf("readOnlyHint leaked into OpenAI wire payload: %s", s)
+	}
+	if strings.Contains(s, "File Reader") {
+		t.Errorf("annotation title leaked into OpenAI wire payload: %s", s)
+	}
+
+	// The function definition must still be intact
+	if !strings.Contains(s, "read_file") {
+		t.Errorf("function name missing from OpenAI wire payload: %s", s)
 	}
 }
 

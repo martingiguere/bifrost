@@ -1,2 +1,1 @@
-- chore: upgraded core to v1.4.20 and framework to v1.2.39
-- fix: capture responses streaming API errors
+- chore: bumped transitive golang.org/x dependencies (crypto, net, sys, text) for Docker Scout CVE remediation (#3900)

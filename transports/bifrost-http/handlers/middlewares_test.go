@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"compress/gzip"
 	"compress/zlib"
+	"context"
 	cryptoRand "crypto/rand"
 	"encoding/json"
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -71,7 +74,7 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Methods")) != "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD" {
 				t.Errorf("Access-Control-Allow-Methods header not set correctly")
 			}
-			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key" {
+			if string(ctx.Response.Header.Peek("Access-Control-Allow-Headers")) != "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID" {
 				t.Errorf("Access-Control-Allow-Headers header not set correctly")
 			}
 			if string(ctx.Response.Header.Peek("Access-Control-Allow-Credentials")) != "true" {
@@ -410,6 +413,69 @@ func TestChainMiddlewares_MiddlewareCanModifyContext(t *testing.T) {
 	chained(ctx)
 }
 
+func TestIsInferenceWSEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/responses",
+		"/v1/realtime",
+		"/responses",
+		"/realtime",
+		"/openai/v1/responses",
+		"/openai/responses",
+		"/openai/openai/responses",
+		"/openai/v1/realtime",
+		"/openai/realtime",
+		"/openai/openai/realtime",
+	}
+
+	for _, path := range paths {
+		if !isInferenceWSEndpoint(path) {
+			t.Fatalf("expected inference websocket path %s to be recognized", path)
+		}
+	}
+
+	if isInferenceWSEndpoint("/api/ws") {
+		t.Fatal("dashboard websocket path should not be treated as inference websocket")
+	}
+	if isInferenceWSEndpoint("/openai/chat/completions") {
+		t.Fatal("non-websocket OpenAI path should not be treated as inference websocket")
+	}
+}
+
+func TestIsRealtimeTransportEndpoint(t *testing.T) {
+	paths := []string{
+		"/v1/realtime",
+		"/realtime",
+		"/openai/realtime",
+		"/openai/v1/realtime",
+		"/openai/openai/realtime",
+		"/v1/realtime/calls",
+		"/realtime/calls",
+		"/openai/realtime/calls",
+		"/openai/v1/realtime/calls",
+		"/openai/openai/realtime/calls",
+	}
+
+	for _, path := range paths {
+		if !isRealtimeTransportEndpoint(path) {
+			t.Fatalf("expected realtime transport path %s to be recognized", path)
+		}
+	}
+
+	nonTransportPaths := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+		"/v1/chat/completions",
+	}
+
+	for _, path := range nonTransportPaths {
+		if isRealtimeTransportEndpoint(path) {
+			t.Fatalf("did not expect non-transport path %s to be recognized", path)
+		}
+	}
+}
+
 // Testlib.ChainMiddlewares_ShortCircuit tests that when a middleware writes a response
 // and does not call next, subsequent middlewares and handler do not execute.
 func TestChainMiddlewares_ShortCircuit(t *testing.T) {
@@ -663,6 +729,83 @@ func TestAuthMiddleware_WhitelistedRoutes(t *testing.T) {
 	}
 }
 
+func TestAuthMiddleware_InferenceMiddleware_RealtimeTransportBypassesAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime",
+		"/openai/v1/realtime",
+		"/v1/realtime/calls?model=gpt-realtime",
+		"/openai/v1/realtime/calls?model=gpt-realtime",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if !nextCalled {
+				t.Fatalf("expected realtime transport route %s to bypass auth", route)
+			}
+		})
+	}
+}
+
+func TestAuthMiddleware_InferenceMiddleware_RealtimeMintingStillRequiresAuth(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	am := &AuthMiddleware{}
+	am.UpdateAuthConfig(&configstore.AuthConfig{
+		AdminUserName: schemas.NewEnvVar("admin"),
+		AdminPassword: schemas.NewEnvVar("hashedpassword"),
+		IsEnabled:     true,
+	})
+
+	routes := []string{
+		"/v1/realtime/client_secrets",
+		"/v1/realtime/sessions",
+		"/openai/v1/realtime/client_secrets",
+		"/openai/v1/realtime/sessions",
+	}
+
+	for _, route := range routes {
+		t.Run(route, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetRequestURI(route)
+
+			nextCalled := false
+			next := func(ctx *fasthttp.RequestCtx) {
+				nextCalled = true
+			}
+
+			handler := am.InferenceMiddleware()(next)
+			handler(ctx)
+
+			if nextCalled {
+				t.Fatalf("expected realtime minting route %s to still require auth", route)
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusUnauthorized {
+				t.Fatalf("expected %d for route %s, got %d", fasthttp.StatusUnauthorized, route, ctx.Response.StatusCode())
+			}
+		})
+	}
+}
+
 // TestAuthMiddleware_UpdateAuthConfig_NilToEnabled tests updating auth config from nil to enabled
 func TestAuthMiddleware_UpdateAuthConfig_NilToEnabled(t *testing.T) {
 	SetLogger(&mockLogger{})
@@ -864,7 +1007,7 @@ func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	handler(ctx)
 
 	// Check default headers are set
-	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key"
+	expectedHeaders := "Content-Type, Authorization, X-Requested-With, X-Stainless-Timeout, X-Api-Key, X-OpenAI-Agents-SDK, X-Operation-ID"
 	actualHeaders := string(ctx.Response.Header.Peek("Access-Control-Allow-Headers"))
 	if actualHeaders != expectedHeaders {
 		t.Errorf("Expected Access-Control-Allow-Headers to be %s, got %s", expectedHeaders, actualHeaders)
@@ -1879,4 +2022,104 @@ func zstdCompress(data []byte) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// captureTracePlugin is an ObservabilityPlugin that captures the root and llm.call
+// span timestamps from a flushed trace. Timestamps are copied synchronously inside
+// Inject because the tracer releases the pooled trace once Inject returns.
+type captureTracePlugin struct {
+	done      chan struct{}
+	rootStart time.Time
+	rootEnd   time.Time
+	llmEnd    time.Time
+	foundLLM  bool
+}
+
+func (p *captureTracePlugin) GetName() string { return "capture-trace" }
+func (p *captureTracePlugin) Cleanup() error  { return nil }
+func (p *captureTracePlugin) Inject(_ context.Context, trace *schemas.Trace) error {
+	defer close(p.done)
+	if trace == nil || trace.RootSpan == nil {
+		return nil
+	}
+	p.rootStart = trace.RootSpan.StartTime
+	p.rootEnd = trace.RootSpan.EndTime
+	for _, span := range trace.Spans {
+		if span != nil && span.Kind == schemas.SpanKindLLMCall {
+			p.llmEnd = span.EndTime
+			p.foundLLM = true
+		}
+	}
+	return nil
+}
+
+// TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan asserts that for a deferred
+// (streaming) request the root HTTP span is ended by the trace completer — after the
+// stream drains — rather than at handler return. Before the fix the middleware ended
+// the root span in its defer, so the root closed before the deferred llm.call span,
+// making the child appear longer than its parent in trace viewers.
+func TestTracingMiddleware_StreamingRootSpanEndsAfterLLMSpan(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &captureTracePlugin{done: make(chan struct{})}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin})
+
+	tm := NewTracingMiddleware(tracer)
+
+	var traceID, rootSpanID string
+	var completer func([]schemas.PluginLogEntry)
+	next := func(ctx *fasthttp.RequestCtx) {
+		traceID, _ = ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+		rootSpanID, _ = ctx.UserValue(schemas.BifrostContextKeySpanID).(string)
+		completer, _ = ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
+		// Mark this as a deferred (streaming) request so the middleware leaves the
+		// root span open for the completer to end.
+		ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetMethod("POST")
+	// Runs setup, next, and the middleware defer (which must NOT end the root span
+	// because the request is deferred).
+	tm.Middleware()(next)(ctx)
+
+	if traceID == "" {
+		t.Fatal("middleware did not set a trace ID")
+	}
+	if completer == nil {
+		t.Fatal("middleware did not set a trace completer")
+	}
+
+	// Simulate the provider goroutine: the deferred llm.call span ends mid-stream...
+	goCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	goCtx = context.WithValue(goCtx, schemas.BifrostContextKeySpanID, rootSpanID)
+	_, llmHandle := tracer.StartSpan(goCtx, "chat test-model", schemas.SpanKindLLMCall)
+	time.Sleep(10 * time.Millisecond)
+	tracer.EndSpan(llmHandle, schemas.SpanStatusOk, "")
+
+	// ...and the trace completer fires after the stream fully drains.
+	completer(nil)
+
+	select {
+	case <-plugin.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for trace injection")
+	}
+
+	if !plugin.foundLLM {
+		t.Fatal("llm.call span not found in flushed trace")
+	}
+	if plugin.rootEnd.IsZero() {
+		t.Fatal("root span EndTime is zero — it was never ended")
+	}
+	if plugin.rootEnd.Before(plugin.llmEnd) {
+		t.Fatalf("root span ended before llm.call span: root.EndTime=%v, llm.EndTime=%v", plugin.rootEnd, plugin.llmEnd)
+	}
+	if !plugin.rootEnd.After(plugin.rootStart) {
+		t.Fatalf("root span has non-positive duration: start=%v, end=%v", plugin.rootStart, plugin.rootEnd)
+	}
 }

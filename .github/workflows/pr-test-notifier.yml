@@ -1,8 +1,7 @@
 name: PR Test Notifier
 
 on:
-  pull_request:
-    types: [opened, reopened]
+  push:
     branches:
       - main
 
@@ -29,7 +28,7 @@ jobs:
         run: |
           COMMIT_MESSAGE=$(git log -1 --pretty=%B)
           FIRST_LINE=$(echo "$COMMIT_MESSAGE" | head -n 1)
-          if [[ "$FIRST_LINE" == *"--skip-pipeline"* ]]; then
+          if [[ "$FIRST_LINE" == *"--skip-ci"* ]]; then
             echo "should-skip=true" >> $GITHUB_OUTPUT
           else
             echo "should-skip=false" >> $GITHUB_OUTPUT

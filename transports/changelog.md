@@ -1,19 +1,10 @@
-## ✨ Features
+## 🔒 Security
 
-- **Claude Opus 4.7 Support** — Added compatibility for Anthropic's Claude Opus 4.7 model, including adaptive thinking, task-budgets beta header, `display` parameter handling, and "xhigh" effort mapping
+- **Go Dependency CVE Remediation** — Updated `golang.org/x` dependencies flagged by Docker Scout, clearing 20 advisories (severity up to 10.0): `crypto` v0.49.0 → v0.52.0, `net` v0.52.0 → v0.55.0, `sys` v0.42.0 → v0.45.0, `text` v0.35.0 → v0.37.0, `term` v0.41.0 → v0.43.0 (cli). Verified with `govulncheck` against the live Go vulnerability database: zero vulnerabilities remain in any module (#3900)
+- **Hardened Container Image** — Removed the standalone GNU `wget` package from the Alpine runtime image, eliminating CVE-2025-69194 (8.8); the `HEALTHCHECK` now uses the built-in busybox `wget` applet, with no functional change
 
 ## 🐞 Fixed
 
-- **Gemini Tool Outputs** — Handle content block tool outputs in Responses API path for `function_call_output` messages (thanks [@tom-diacono](https://github.com/tom-diacono)!)
-- **Bedrock Streaming** — Emit `message_stop` event for Anthropic invoke stream and case-insensitive `anthropic-beta` header merging (thanks [@tefimov](https://github.com/tefimov)!)
-- **Bedrock Tool Images** — Preserve image content blocks in tool results when converting Anthropic Messages to Bedrock Converse API (thanks [@Edward-Upton](https://github.com/Edward-Upton)!)
-- **Gemini Thinking Level** — Preserved `thinkingLevel` parameters across round-trip conversions and corrected finish reason mapping
-- **Anthropic WebSearch** — Removed the Claude Code user agent restriction so WebSearch tool arguments flow for all clients
-- **Responses Streaming Errors** — Capture errors mid-stream in the Responses API so transport clients see failures instead of silent termination
-- **Anthropic Request Fallbacks** — Dropped fallback fields from outgoing Anthropic requests to avoid schema validation errors
-- **Async Context Propagation** — Preserve context values in async requests so downstream handlers retain request-scoped data
-- **Custom Providers** — Allow custom providers without a list-models endpoint to accept any model rather than restricting on virtual key registration
-- **OTEL Plugin** — Default `insecure` to `true` in config.json and include fallbacks in emitted OTEL metrics
-- **Payload Marshalling** — Removed unnecessary marshalling of payload in the transport path
-- **Helm mcpClientConfig** — Fixed templating for `mcpClientConfig` (thanks [@crust3780](https://github.com/crust3780)!)
-- **Helm Chart** — Refreshed the helm chart with validation fixes and removed the prerelease tag
+- **Ollama Streaming Auth** — Ollama streaming text and chat requests now forward the configured API key as an `Authorization: Bearer` header (#3906)
+- **SGL Streaming Auth** — SGL provider now sends the `Authorization` header on streaming requests (#3307) (thanks [@hensapir](https://github.com/hensapir)!)
+- **Governance & Logging APIs** — Removed the `from_memory` query parameter; virtual key and config list APIs now return consistent DB-backed results, with VK names batch-fetched in a single query (#3903)

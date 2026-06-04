@@ -196,7 +196,7 @@ else
   echo "✅ VLLM key config required fields match: [$HELM_VLLM_REQUIRED]"
 fi
 
-# Check concurrency_config required fields (config calls this def concurrency_and_buffer_size)
+# Check concurrency_and_buffer_size required fields (renamed from concurrency_config)
 CONFIG_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrency_and_buffer_size.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_CONCURRENCY_REQUIRED=$(jq -r '."$defs".concurrencyConfig.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
@@ -433,15 +433,17 @@ else
   echo "✅ MCP stdio config required fields match: [$CONFIG_MCP_STDIO_REQUIRED]"
 fi
 
-# MCP websocket_config / http_config are Helm-only sub-structures; config.schema.json uses
-# a flat connection_type + connection_string instead, so there is nothing to compare here.
+# MCP websocket_config and http_config were removed from config.schema.json
+# because the corresponding Go fields don't exist (MCP rendering uses
+# connection_type + connection_string directly, not sub-object configs).
+# Helm still declares them for user convenience — not a schema sync concern.
 
 echo ""
 echo "🔍 Checking required fields in SAML/SCIM config..."
 
 # Check okta_config required fields
 CONFIG_OKTA_REQUIRED=$(jq -r '."$defs".okta_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[0].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_OKTA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[] | select(.if.properties.provider.const == "okta") | .then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_OKTA_REQUIRED" != "$HELM_OKTA_REQUIRED" ]; then
   echo "❌ Okta config required fields mismatch:"
@@ -454,7 +456,7 @@ fi
 
 # Check entra_config required fields
 CONFIG_ENTRA_REQUIRED=$(jq -r '."$defs".entra_config.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
-HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[1].then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
+HELM_ENTRA_REQUIRED=$(jq -r '.properties.bifrost.properties.scim.allOf[] | select(.if.properties.provider.const == "entra") | .then.properties.config.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_ENTRA_REQUIRED" != "$HELM_ENTRA_REQUIRED" ]; then
   echo "❌ Entra config required fields mismatch:"

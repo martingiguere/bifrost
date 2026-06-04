@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	DefaultPricingSyncInterval    = 24 * time.Hour
+	DefaultSyncInterval           = 24 * time.Hour
 	MinimumPricingSyncIntervalSec = int64(3600)
 
 	// syncWorkerTickerPeriod is the fixed interval at which the background sync worker
@@ -26,4 +26,5 @@ const (
 type Config struct {
 	PricingURL          *string `json:"pricing_url,omitempty"`
 	PricingSyncInterval *int64  `json:"pricing_sync_interval,omitempty"` // seconds
+	ModelParametersURL  *string `json:"model_parameters_url,omitempty"`
 }

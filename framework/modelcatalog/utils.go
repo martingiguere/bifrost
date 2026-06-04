@@ -1,11 +1,54 @@
 package modelcatalog
 
 import (
+	"context"
+	"slices"
 	"strings"
+	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
+
+const retryBackoffMin = time.Second
+
+// WithRetries runs op until it succeeds or maxRetries retries are exhausted
+// (1 initial attempt + maxRetries retries). After each failure it waits with
+// exponential backoff starting at 1 second (retryBackoffMin), capped at maxBackoff
+// when maxBackoff > 0. If maxBackoff is zero, there is no upper cap on the delay.
+func WithRetries[T any](ctx context.Context, maxRetries int, maxBackoff time.Duration, op func() (T, error)) (T, error) {
+	var zero T
+	if maxRetries < 0 {
+		maxRetries = 0
+	}
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		default:
+		}
+
+		if attempt > 0 {
+			backoff := retryBackoffMin * time.Duration(1<<uint(attempt-1))
+			if maxBackoff > 0 && backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			select {
+			case <-ctx.Done():
+				return zero, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		v, err := op()
+		if err == nil {
+			return v, nil
+		}
+		lastErr = err
+	}
+	return zero, lastErr
+}
 
 // makeKey creates a unique key for a model, provider, and mode for pricingData map
 func makeKey(model, provider, mode string) string { return model + "|" + provider + "|" + mode }
@@ -36,7 +79,7 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "completion"
 	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
 		baseType = "chat"
-	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest:
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest, schemas.RealtimeRequest:
 		baseType = "responses"
 	case schemas.EmbeddingRequest:
 		baseType = "embedding"
@@ -52,6 +95,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		baseType = "image_edit"
 	case schemas.VideoGenerationRequest, schemas.VideoRemixRequest:
 		baseType = "video_generation"
+	case schemas.OCRRequest:
+		baseType = "ocr"
+	case schemas.ContainerCreateRequest:
+		baseType = "container_create"
 	}
 
 	return baseType
@@ -65,8 +112,10 @@ func normalizeStreamRequestType(rt schemas.RequestType) schemas.RequestType {
 		return schemas.TextCompletionRequest
 	case schemas.ChatCompletionStreamRequest:
 		return schemas.ChatCompletionRequest
-	case schemas.ResponsesStreamRequest:
+	case schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
 		return schemas.ResponsesRequest
+	case schemas.RealtimeRequest:
+		return schemas.RealtimeRequest
 	case schemas.SpeechStreamRequest:
 		return schemas.SpeechRequest
 	case schemas.TranscriptionStreamRequest:
@@ -107,16 +156,16 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		Architecture:    entry.Architecture,
 
 		// Costs - Text
-		InputCostPerToken:                 entry.InputCostPerToken,
-		OutputCostPerToken:                entry.OutputCostPerToken,
-		InputCostPerTokenBatches:          entry.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:         entry.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:         entry.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:        entry.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:             entry.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:            entry.OutputCostPerTokenFlex,
-		InputCostPerTokenAbove200kTokens:         entry.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority: entry.InputCostPerTokenAbove200kTokensPriority,
+		InputCostPerToken:                         entry.InputCostPerToken,
+		OutputCostPerToken:                        entry.OutputCostPerToken,
+		InputCostPerTokenBatches:                  entry.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                 entry.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                 entry.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                entry.OutputCostPerTokenPriority,
+		InputCostPerTokenFlex:                     entry.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                    entry.OutputCostPerTokenFlex,
+		InputCostPerTokenAbove200kTokens:          entry.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:  entry.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         entry.OutputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokensPriority: entry.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - 272k Tier
@@ -180,31 +229,27 @@ func convertPricingDataToTableModelPricing(modelKey string, entry PricingEntry) 
 		// Costs - Other
 		SearchContextCostPerQuery:     entry.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: entry.CodeInterpreterCostPerSession,
+
+		// Costs - OCR
+		OCRCostPerPage:        entry.OCRCostPerPage,
+		AnnotationCostPerPage: entry.AnnotationCostPerPage,
 	}
 }
 
 // convertTableModelPricingToPricingData converts the TableModelPricing struct to a PricingEntry struct
 func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModelPricing) *PricingEntry {
-	return &PricingEntry{
-		BaseModel:       pricing.BaseModel,
-		Provider:        pricing.Provider,
-		Mode:            pricing.Mode,
-		ContextLength:   pricing.ContextLength,
-		MaxInputTokens:  pricing.MaxInputTokens,
-		MaxOutputTokens: pricing.MaxOutputTokens,
-		Architecture:    pricing.Architecture,
-
+	options := PricingOptions{
 		// Costs - Text
-		InputCostPerToken:                 pricing.InputCostPerToken,
-		OutputCostPerToken:                pricing.OutputCostPerToken,
-		InputCostPerTokenBatches:          pricing.InputCostPerTokenBatches,
-		OutputCostPerTokenBatches:         pricing.OutputCostPerTokenBatches,
-		InputCostPerTokenPriority:         pricing.InputCostPerTokenPriority,
-		OutputCostPerTokenPriority:        pricing.OutputCostPerTokenPriority,
-		InputCostPerTokenFlex:             pricing.InputCostPerTokenFlex,
-		OutputCostPerTokenFlex:            pricing.OutputCostPerTokenFlex,
-		InputCostPerTokenAbove200kTokens:         pricing.InputCostPerTokenAbove200kTokens,
-		InputCostPerTokenAbove200kTokensPriority: pricing.InputCostPerTokenAbove200kTokensPriority,
+		InputCostPerToken:                         pricing.InputCostPerToken,
+		OutputCostPerToken:                        pricing.OutputCostPerToken,
+		InputCostPerTokenBatches:                  pricing.InputCostPerTokenBatches,
+		OutputCostPerTokenBatches:                 pricing.OutputCostPerTokenBatches,
+		InputCostPerTokenPriority:                 pricing.InputCostPerTokenPriority,
+		OutputCostPerTokenPriority:                pricing.OutputCostPerTokenPriority,
+		InputCostPerTokenFlex:                     pricing.InputCostPerTokenFlex,
+		OutputCostPerTokenFlex:                    pricing.OutputCostPerTokenFlex,
+		InputCostPerTokenAbove200kTokens:          pricing.InputCostPerTokenAbove200kTokens,
+		InputCostPerTokenAbove200kTokensPriority:  pricing.InputCostPerTokenAbove200kTokensPriority,
 		OutputCostPerTokenAbove200kTokens:         pricing.OutputCostPerTokenAbove200kTokens,
 		OutputCostPerTokenAbove200kTokensPriority: pricing.OutputCostPerTokenAbove200kTokensPriority,
 		// Costs - 272k Tier
@@ -268,5 +313,146 @@ func convertTableModelPricingToPricingData(pricing *configstoreTables.TableModel
 		// Costs - Other
 		SearchContextCostPerQuery:     pricing.SearchContextCostPerQuery,
 		CodeInterpreterCostPerSession: pricing.CodeInterpreterCostPerSession,
+
+		// Costs - OCR
+		OCRCostPerPage:        pricing.OCRCostPerPage,
+		AnnotationCostPerPage: pricing.AnnotationCostPerPage,
 	}
+	return &PricingEntry{
+		BaseModel:            pricing.BaseModel,
+		Provider:             pricing.Provider,
+		Mode:                 pricing.Mode,
+		ContextLength:        pricing.ContextLength,
+		MaxInputTokens:       pricing.MaxInputTokens,
+		MaxOutputTokens:      pricing.MaxOutputTokens,
+		Architecture:         pricing.Architecture,
+		AdditionalAttributes: pricing.AdditionalAttributes,
+		PricingOptions:       options,
+	}
+}
+
+// convertTablePricingOverrideToPricingOverride converts a TablePricingOverride to a PricingOverride.
+func convertTablePricingOverrideToPricingOverride(override *configstoreTables.TablePricingOverride) (PricingOverride, error) {
+	var options PricingOptions
+	if err := sonic.Unmarshal([]byte(override.PricingPatchJSON), &options); err != nil {
+		return PricingOverride{}, err
+	}
+	return PricingOverride{
+		ID:            override.ID,
+		Name:          override.Name,
+		ScopeKind:     ScopeKind(override.ScopeKind),
+		VirtualKeyID:  override.VirtualKeyID,
+		ProviderID:    override.ProviderID,
+		ProviderKeyID: override.ProviderKeyID,
+		MatchType:     MatchType(override.MatchType),
+		Pattern:       override.Pattern,
+		RequestTypes:  override.RequestTypes,
+		Options:       options,
+	}, nil
+}
+
+// normalizeEndpointToOutputType converts a supported_endpoints URL path to a normalized output type.
+// Returns empty string for unrecognized endpoints.
+func normalizeEndpointToOutputType(endpoint string) string {
+	switch {
+	case strings.Contains(endpoint, "/chat/completions"):
+		return "chat_completion"
+	case strings.Contains(endpoint, "/responses"):
+		return "responses"
+	case strings.Contains(endpoint, "/completions"):
+		return "text_completion"
+	default:
+		return ""
+	}
+}
+
+// normalizeModeToOutputType converts mode to a normalized output type.
+func normalizeModeToOutputType(mode string) string {
+	switch mode {
+	case "chat":
+		return "chat_completion"
+	case "completion":
+		return "text_completion"
+	case "responses":
+		return "responses"
+	default:
+		return ""
+	}
+}
+
+// modelParametersParseResult is the parsed result type used by buildSupportedOutputsIndex.
+type modelParametersParseResult struct {
+	Mode               *string  `json:"mode,omitempty"`
+	SupportedEndpoints []string `json:"supported_endpoints,omitempty"`
+	ModelParameters    []struct {
+		ID string `json:"id"`
+	} `json:"model_parameters,omitempty"`
+	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
+	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
+	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
+	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
+	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
+	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
+	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
+	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
+	VertexMultiRegionOnly           *bool `json:"vertex_multi_region_only,omitempty"`
+}
+
+// extractSupportedParams builds a list of supported OpenAI-compatible parameter
+// names from model_parameters[].id values and supports_* boolean flags.
+func extractSupportedParams(parsed *modelParametersParseResult) []string {
+	var supported []string
+	addParam := func(name string) {
+		if !slices.Contains(supported, name) {
+			supported = append(supported, name)
+		}
+	}
+
+	// From model_parameters[].id — map IDs to request param names
+	for _, mp := range parsed.ModelParameters {
+		switch mp.ID {
+		case "reasoning_effort", "reasoning_summary":
+			addParam("reasoning")
+		case "web_search":
+			addParam("web_search_options")
+		case "promptTools", "image_detail", "stream":
+			// skip — not top-level request parameters
+		default:
+			addParam(mp.ID)
+		}
+	}
+
+	// From supports_* boolean flags
+	if parsed.SupportsAssistantPrefill != nil && *parsed.SupportsAssistantPrefill {
+		// not an actual model parameter; if present, trailing assistant messages
+		// for anthropic and bedrock's anthropic models will not be trimmed
+		addParam("assistant_prefill")
+	}
+	if parsed.SupportsFunctionCalling != nil && *parsed.SupportsFunctionCalling {
+		addParam("tools")
+	}
+	if parsed.SupportsParallelFunctionCalling != nil && *parsed.SupportsParallelFunctionCalling {
+		addParam("parallel_tool_calls")
+	}
+	if parsed.SupportsToolChoice != nil && *parsed.SupportsToolChoice {
+		addParam("tool_choice")
+	}
+	if parsed.SupportsReasoning != nil && *parsed.SupportsReasoning {
+		addParam("reasoning")
+	}
+	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
+		addParam("response_format")
+		addParam("text")
+	}
+	if parsed.SupportsServiceTier != nil && *parsed.SupportsServiceTier {
+		addParam("service_tier")
+	}
+	if parsed.SupportsPromptCaching != nil && *parsed.SupportsPromptCaching {
+		addParam("cachePoint")
+		addParam("cache_control")
+		addParam("prompt_cache_key")
+		addParam("prompt_cache_retention")
+	}
+
+	return supported
 }
